@@ -1,4 +1,4 @@
-azure-ai-formrecognizer==2022-08-31
+azure-ai-formrecognizer==3.2.1
 azure-core==1.24.0
 python-dotenv==0.20.0
 openai==0.27.0
