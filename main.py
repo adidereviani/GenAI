@@ -27,7 +27,6 @@ for page in result.pages:
     print(f"Page number: {page.page_number}, width: {page.width}, height: {page.height}")
 
 
-
 import uvicorn
 
 if __name__ == "__main__":
