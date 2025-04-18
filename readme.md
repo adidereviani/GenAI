@@ -131,9 +131,9 @@ Select your preferred language from the sidebar!
 
 ---
 
-## ❤️ Built By
+## 👨‍💻 Author
 
-Adi Prager
+Developed by Adi Prager.
 
 ---
 
