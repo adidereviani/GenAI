@@ -26,7 +26,6 @@ translations = {
         "title": "🏛️ Bituach Leumi Form Extractor",
         "upload_header": "Upload Your Form 📄",
         "upload_file": "Choose a PDF or JPG",
-        "caption": "Built with ❤️ by Adi Prager",
         "scanning": "🔍 Scanning the document...",
         "extracting": "📝 Extracting fields...",
         "validating": "🛡️ Validating extracted data...",
@@ -46,7 +45,6 @@ translations = {
         "title": "🏛️ חילוץ טפסי ביטוח לאומי",
         "upload_header": "העלה את הטופס שלך 📄",
         "upload_file": "בחר קובץ PDF או JPG",
-        "caption": "נבנה באהבה ❤️ על ידי עדי פרגר",
         "scanning": "🔍 סורק את המסמך...",
         "extracting": "📝 מחלץ שדות...",
         "validating": "🛡️ מאמת נתונים...",
@@ -93,7 +91,6 @@ with st.sidebar:
     st.header(t["upload_header"])
     uploaded = st.file_uploader(t["upload_file"])
     st.markdown("---")
-    st.caption(t["caption"])
 
 progress_placeholder = st.empty()
 
