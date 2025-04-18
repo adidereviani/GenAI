@@ -1,8 +1,18 @@
+from __future__ import annotations
+
 import re
 from datetime import datetime
+from typing import Dict, Any
 
-def is_valid_id(id_number: str) -> bool:
-    num = re.sub(r"\D", "", id_number).zfill(9)
+from .json_template import JSON_TEMPLATE
+
+def _only_digits(s: str) -> str:
+    """Removes all non-digit characters from the given string."""
+    return re.sub(r"\D", "", s)
+
+def _valid_id(num: str) -> bool:
+    """Validates an Israeli ID number using the official checksum algorithm."""
+    num = _only_digits(num).zfill(9)
     if len(num) != 9:
         return False
     total = 0
@@ -14,57 +24,57 @@ def is_valid_id(id_number: str) -> bool:
         total += product
     return total % 10 == 0
 
-
-def is_valid_date(d: dict) -> bool:
+def _valid_date(d: Dict[str, str]) -> bool:
+    """Checks if a date dictionary with day, month, and year is a valid date."""
     try:
-        if d.get("day") and d.get("month") and d.get("year"):
-            datetime.strptime(f"{d['day']}/{d['month']}/{d['year']}", "%d/%m/%Y")
+        if all(d.get(x) for x in ("day", "month", "year")):
+            datetime.strptime("{day}/{month}/{year}".format(**d), "%d/%m/%Y")
             return True
     except Exception:
         pass
     return False
 
-def is_valid_mobile_phone(phone: str) -> bool:
-    # Valid Israeli mobile numbers must be exactly 10 digits and start with "05".
-    return bool(re.fullmatch(r"05\d{8}", phone)) if phone else True
+def _valid_mobile(phone: str) -> bool:
+    """Validates that the phone number matches the Israeli mobile format (05xxxxxxxx)."""
+    return bool(re.fullmatch(r"05\d{8}", phone))
 
-def is_valid_landline_phone(phone: str) -> bool:
-    # Israeli landline numbers typically start with 0 and have 9 digits (e.g., 0[2-9] followed by 7 digits).
-    return bool(re.fullmatch(r"0[2-9]\d{7}", phone)) if phone else True
+def _valid_landline(phone: str) -> bool:
+    """Validates that the phone number matches the Israeli landline format (0[2-9]xxxxxxx)."""
+    return bool(re.fullmatch(r"0[2-9]\d{7}", phone))
 
-def extract_and_fix_digits(text: str) -> str:
-    # Fix sequences of digits with spaces and missing prefixes
-    text = re.sub(r"\b(\d ?){8,11}\b", lambda m: m.group(0).replace(' ', ''), text)
+def validate_fields(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Validates extracted data fields against expected formats and constraints.
+    Returns a dictionary mapping field paths to specific error messages."""
+    errors: Dict[str, Any] = {}
 
-    # Fix mobile numbers missing 05 prefix
-    text = re.sub(r"(?<!\d)([4-9]\d{7})(?!\d)", r"05\1", text)
+    def check_missing_fields(template: Dict[str, Any], actual: Dict[str, Any], path: str = ""):
+        """Recursively checks for missing fields based on the JSON template."""
+        for key, value in template.items():
+            full_key = f"{path}.{key}" if path else key
+            if isinstance(value, dict):
+                check_missing_fields(value, actual.get(key, {}), full_key)
+            else:
+                if actual.get(key, "") == "":
+                    errors[full_key] = {"error": "Missing value"}
 
-    # Clean landline numbers with correct prefix
-    text = re.sub(r"(?<!\d)(0[2-9]\d{7})(?!\d)", lambda m: m.group(1).replace(' ', ''), text)
+    check_missing_fields(JSON_TEMPLATE, data)
 
-    return text
+    if not _valid_id(data.get("idNumber", "")):
+        errors["idNumber"] = {"error": "Invalid Israeli ID number"}
 
-def validate_fields(data: dict) -> dict:
-    errors = {}
-    id_number = data.get("idNumber", "")
-    if not is_valid_id(id_number):
-        errors["idNumber"] = {
-            "error": "Invalid ID. Israeli ID must be 9 digits and valid per checksum.",
-            "suggestion": f"Try padding with zero: {id_number.zfill(9)}"
-        }
+    if not _valid_date(data.get("dateOfBirth", {})):
+        errors["dateOfBirth"] = {"error": "Invalid date"}
 
-    if not is_valid_date(data.get("dateOfBirth", {})):
-        errors["dateOfBirth"] = {"error": "Invalid date of birth"}
+    mob = data.get("mobilePhone", "")
+    if mob and not _valid_mobile(mob):
+        errors["mobilePhone"] = {"error": "Invalid mobile format (05xxxxxxxx)"}
 
-    mobile = data.get("mobilePhone", "")
-    if mobile and not is_valid_mobile_phone(mobile):
-        errors["mobilePhone"] = {
-            "error": "Invalid mobile format.",
-            "suggestion": f"Ensure it starts with 05 and has 10 digits. Got: {mobile}"
-        }
+    land = data.get("landlinePhone", "")
+    if land and not _valid_landline(land):
+        errors["landlinePhone"] = {"error": "Invalid landline format"}
 
-    landline = data.get("landlinePhone", "")
-    if landline and not is_valid_landline_phone(landline):
-        errors["landlinePhone"] = {"error": "Invalid landline format."}
+    if gender := data.get("gender", ""):
+        if gender not in {"זכר", "נקבה", "Male", "Female"}:
+            errors["gender"] = {"error": "Unrecognised gender value"}
 
     return errors

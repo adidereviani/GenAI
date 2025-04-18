@@ -1,146 +1,114 @@
-# Updated extraction function with enhanced instructions (extraction/extractor.py)
-import os
+from __future__ import annotations
+
 import json
-import re
+import os
+import time
+from copy import deepcopy
+from typing import Any, Dict
+
 import openai
 from dotenv import load_dotenv
 
+from extraction.id_phone_helpers import best_israeli_id, best_mobile
+from extraction.validator import _valid_id, _valid_mobile
+from .json_template import JSON_TEMPLATE
+
+# Load environment variables from a .env file
 load_dotenv()
+
+# Setup OpenAI API credentials
 openai.api_type = "azure"
 openai.api_key = os.getenv("OPENAI_API_KEY")
 openai.api_base = os.getenv("OPENAI_API_BASE")
 openai.api_version = os.getenv("OPENAI_API_VERSION")
+_DEPLOYMENT = "gpt-4o"
 
-DEPLOYMENT_NAME = "gpt-4o"
+# Define mappings between English and Hebrew labels
+LABEL_ALIASES = {
+    "Last name": "שם משפחה",
+    "First name": "שם פרטי",
+    "Date of birth": "תאריך לידה",
+    "ID number": "מספר זהות",
+    "Gender": "מין",
+}
 
+# Template for the system prompt to instruct the LLM
+_PROMPT_TEMPLATE = """
+You are a JSON‑generating assistant. Return **only** valid JSON and nothing else – no markdown.
+The JSON **must** match exactly the structure shown below; if a field is missing, output an empty string.
 
-def extract_fields(ocr_text: str) -> dict:
-    system_message = (
-        "You are a JSON-generating assistant. Return only valid JSON with no extra explanation. "
-        "Output must be enclosed in a triple backtick code block. "
-        "Do NOT translate values — preserve them exactly as they appear (in Hebrew or English). "
-        "Use the following field names in English, matching the structure exactly as below."
-    )
+{aliases}
 
-    user_prompt = f"""
-        Extract all fields from the form content below.
-        Preserve field names in Hebrew exactly as they appear in the form (e.g., "שם משפחה", "תאריך לידה").
-        For date fields, use objects with "יום", "חודש", "שנה" as keys.
-        
-        - "שם משפחה" → "lastName"
-        - "שם פרטי" → "firstName"
-        - "מספר זהות" → "idNumber"
-        - "מין" → "gender"
-        - "תאריך לידה" → "dateOfBirth"
-        - "כתובת" → "address"
-          - "רחוב" → "street"
-          - "מספר בית" → "houseNumber"
-          - "כניסה" → "entrance"
-          - "דירה" → "apartment"
-          - "ישוב" → "city"
-          - "מיקוד" → "postalCode"
-          - "תא דואר" → "poBox"
-        - "טלפון קווי" → "landlinePhone"
-        - "טלפון נייד" → "mobilePhone"
-        - "סוג העבודה" → "jobType"
-        - "תאריך הפגיעה" → "dateOfInjury"
-        - "שעת הפגיעה" → "timeOfInjury"
-        - "מקום התאונה" → "accidentLocation"
-        - "כתובת מקום התאונה" → "accidentAddress"
-        - "תיאור התאונה" → "accidentDescription"
-        - "האיבר שנפגע" → "injuredBodyPart"
-        - "חתימה" → "signature"
-        - "תאריך מילוי הטופס" → "formFillingDate"
-        - "תאריך קבלת הטופס בקופה" → "formReceiptDateAtClinic"
-        - "חבר בקופת חולים" → "medicalInstitutionFields.healthFundMember"
-        - "מהות התאונה" → "medicalInstitutionFields.natureOfAccident"
-        - "אבחנות רפואיות" → "medicalInstitutionFields.medicalDiagnoses"
+Extract the fields from the OCR text delimited by triple quotes and populate the template.
+"""
 
-        Extract the fields from the OCR text below and output a JSON object with the structure below.
-        For numeric fields like "idNumber" and "mobilePhone", extract all digits exactly as they appear in the form.
-        The "idNumber" field may contain 9 or 10 digits as it appears.
-        The "mobilePhone" field must include its full prefix (e.g. "05").
+# Build the alias instruction block for the prompt
+alias_lines = [f'- "{eng}" maps to the Hebrew label "{heb}"' for eng, heb in LABEL_ALIASES.items()]
+alias_block = "English ↔ Hebrew aliases:\n" + "\n".join(alias_lines)
+_PROMPT = _PROMPT_TEMPLATE.format(aliases=alias_block)
 
-        JSON structure:
-        {{
-          "lastName": "",
-          "firstName": "",
-          "idNumber": "",
-          "gender": "",
-          "dateOfBirth": {{
-            "day": "",
-            "month": "",
-            "year": ""
-          }},
-          "address": {{
-            "street": "",
-            "houseNumber": "",
-            "entrance": "",
-            "apartment": "",
-            "city": "",
-            "postalCode": "",
-            "poBox": ""
-          }},
-          "landlinePhone": "",
-          "mobilePhone": "",
-          "jobType": "",
-          "dateOfInjury": {{
-            "day": "",
-            "month": "",
-            "year": ""
-          }},
-          "timeOfInjury": "",
-          "accidentLocation": "",
-          "accidentAddress": "",
-          "accidentDescription": "",
-          "injuredBodyPart": "",
-          "signature": "",
-          "formFillingDate": {{
-            "day": "",
-            "month": "",
-            "year": ""
-          }},
-          "formReceiptDateAtClinic": {{
-            "day": "",
-            "month": "",
-            "year": ""
-          }},
-          "medicalInstitutionFields": {{
-            "healthFundMember": "",
-            "natureOfAccident": "",
-            "medicalDiagnoses": ""
-          }}
-        }}
+def _deep_update(dst: Dict[str, Any], src: Dict[str, Any]) -> None:
+    """Recursively updates the destination dictionary with values from the source dictionary.
+    Preserves structure from the destination and fills missing values from the source or leaves them empty."""
+    for k, v in dst.items():
+        if isinstance(v, dict):
+            _deep_update(v, src.get(k, {}))
+        else:
+            dst[k] = src.get(k, "")
 
-        OCR Text:
-        \"\"\"{ocr_text}\"\"\"
+def extract_fields(ocr_text: str) -> Dict[str, Any]:
+    """Extracts structured fields from OCR text using an LLM.
+    Ensures the output matches the required JSON template and applies post-processing corrections."""
+    system_msg = {
+        "role": "system",
+        "content": "You are a helpful assistant that writes JSON strictly conforming to the required schema.",
+    }
+    user_msg = {
+        "role": "user",
+        "content": (
+            f"{_PROMPT}\n\nTemplate:\n{json.dumps(JSON_TEMPLATE, ensure_ascii=False)}\n\n"
+            f'"""' + ocr_text + '"""'
+        ),
+    }
 
-        Return a JSON dictionary matching the structure of the form in Hebrew.
-        Wrap your response in a code block.
-        """
+    delay = 1.5
+    for attempt in range(3):
+        try:
+            resp = openai.ChatCompletion.create(
+                engine=_DEPLOYMENT,
+                messages=[system_msg, user_msg],
+                temperature=0,
+                max_tokens=900,
+            )
+            raw = resp["choices"][0]["message"]["content"].strip()
+            json_text = raw if raw.startswith("{") else raw.split("```")[-2]
+            parsed = json.loads(json_text)
 
-    try:
-        response = openai.ChatCompletion.create(
-            engine=DEPLOYMENT_NAME,
-            messages=[
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0,
-            max_tokens=1800
-        )
+            full = deepcopy(JSON_TEMPLATE)
+            _deep_update(full, parsed)
 
-        raw_output = response["choices"][0]["message"]["content"].strip()
-        match = re.search(r"```json\s*(\{.*?\})\s*```", raw_output, re.DOTALL)
-        json_text = match.group(1) if match else raw_output
-        return correct_common_field_errors(json.loads(json_text))
-    except Exception as e:
-        return {"error": "Failed to extract fields", "details": str(e)}
+            if not _valid_id(full.get("idNumber", "")):
+                if cand := best_israeli_id(ocr_text):
+                    full["idNumber"] = cand
 
+            mob = full.get("mobilePhone", "")
+            if not _valid_mobile(mob):
+                if cand := best_mobile(ocr_text):
+                    full["mobilePhone"] = cand
 
-def correct_common_field_errors(data):
-    if len(data.get('idNumber', '')) == 8:
-        data['idNumber'] = '0' + data['idNumber']
-    if data.get('mobilePhone', '') and not data['mobilePhone'].startswith('05'):
-        data['mobilePhone'] = '05' + data['mobilePhone']
-    return data
+            return _fix_common_errors(full)
+        except Exception as exc:
+            if attempt == 2:
+                raise RuntimeError(f"LLM extraction failed: {exc}")
+            time.sleep(delay)
+            delay *= 2
+
+def _fix_common_errors(d: Dict[str, Any]) -> Dict[str, Any]:
+    """Performs minor deterministic corrections on extracted fields,
+    such as padding ID numbers and correcting mobile phone prefixes."""
+    if len(d.get("idNumber", "")) == 8:
+        d["idNumber"] = "0" + d["idNumber"]
+    phone = d.get("mobilePhone", "")
+    if phone and not phone.startswith("05"):
+        d["mobilePhone"] = "05" + phone.lstrip("0")
+    return d
