@@ -15,10 +15,10 @@ from ocr.ocr_processor import extract_text_from_file
 from extraction.extractor import extract_fields
 from extraction.validator import validate_fields
 
-st.set_page_config(page_title="🏛️ Bituach Leumi Form Extractor", layout="wide")
+st.set_page_config(page_title="🏛️ חילוץ טפסי ביטוח לאומי", layout="wide")
 
 # Language selection
-lang = st.sidebar.selectbox("🌐 Choose Language / בחר שפה", ("English", "עברית"))
+lang = st.sidebar.selectbox("🌐 Choose Language / בחר שפה", ("עברית", "English"))
 
 # UI translations
 translations = {
